@@ -1,0 +1,3 @@
+[build]
+# Keep this empty by default so macOS builds work without extra toolchains.
+# For Raspberry Pi cross-compiling, see README.md (cargo-zigbuild or cross).

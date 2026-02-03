@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/squark-engine",
+  "crates/squark-app",
+]
+
+[profile.release]
+# Helpful for small, CPU-hot DSP code without getting too slow to compile.
+lto = "thin"
+codegen-units = 1
