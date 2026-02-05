@@ -40,7 +40,37 @@ From the repo root:
 
 `source "$HOME/.cargo/env" && cargo run -p squark-app --release`
 
-You should hear a quiet 440Hz sine.
+By default the synth is gated off (silent) until you play a MIDI note.
+
+The current sound engine is a single mass–spring–damper integrated with a semi-implicit Euler step each sample. It is designed so you can swap in other state-update models (multiple masses, waveguides, etc.) without touching the audio driver layer.
+
+### MIDI
+
+- The app will print detected MIDI inputs on startup.
+- List inputs without starting audio:
+
+  `source "$HOME/.cargo/env" && cargo run -p squark-app --release -- --list-midi`
+
+- Select a port via CLI (preferred):
+
+  `source "$HOME/.cargo/env" && cargo run -p squark-app --release -- --midi-port 1`
+
+- Legacy fallback: set `MIDI_PORT` env (0-based) if you prefer.
+
+### Latency tuning (macOS)
+
+- Use `--buffer-frames` to request smaller buffers (e.g. 64 or 128):
+
+  `source "$HOME/.cargo/env" && cargo run -p squark-app --release -- --buffer-frames 64`
+
+- Change sample rate if needed (default is 48k):
+
+  `... -- --sample-rate 44100`
+
+- If CoreAudio rejects the buffer size, we warn and fall back to the device default. Smaller buffers often require:
+  - External USB/Thunderbolt audio interface, or
+  - In **Audio MIDI Setup**, select the output device and set “Format” to the desired sample rate, then (if available) reduce the device buffer size.
+- Close background apps that might grab exclusive audio control (video conf, screen recorders).
 
 ## Build + run on Raspberry Pi (64-bit)
 
@@ -67,6 +97,9 @@ On the Pi (aarch64 OS recommended):
   - `sudo cpufreq-set -g performance`
 - If you use PipeWire, consider running via JACK compatibility or install JACK directly.
 - For best results, use a low-latency kernel and enable realtime scheduling (rtkit).
+- Request small buffers on launch:
+
+  `source "$HOME/.cargo/env" && cargo run -p squark-app --release -- --buffer-frames 64`
 
 ## Optional: cross-compile + deploy from macOS
 
