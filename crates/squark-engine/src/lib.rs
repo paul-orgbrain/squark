@@ -16,11 +16,71 @@ impl Default for EngineParams {
 const MAX_MODES: usize = 10;
 const POSITION_COUPLING_CLAMP: f32 = 1.0;
 const VELOCITY_COUPLING_CLAMP: f32 = 1.0;
+const EXCITATION_GAIN_RANGE: (f32, f32) = (0.1, 20.0);
 const OUTPUT_GAIN_RANGE: (f32, f32) = (0.05, 4.0);
 pub const DEFAULT_INHARMONICITY: f32 = 1.0;
-pub const DEFAULT_POSITION_COUPLING: f32 = 0.08;
-pub const DEFAULT_VELOCITY_COUPLING: f32 = 0.02;
+pub const DEFAULT_POSITION_COUPLING: f32 = 0.0;
+pub const DEFAULT_VELOCITY_COUPLING: f32 = 0.0;
+pub const DEFAULT_EXCITATION_GAIN: f32 = 6.0;
 pub const DEFAULT_OUTPUT_GAIN: f32 = 1.0;
+
+#[derive(Debug, Clone, Copy)]
+struct StrikeExciter {
+    attack_samples: u32,
+    release_samples: u32,
+    attack_pos: u32,
+    release_pos: u32,
+    pulse_amp: f32,
+}
+
+impl StrikeExciter {
+    fn new(sample_rate_hz: f32, attack_ms: f32, release_ms: f32) -> Self {
+        Self {
+            attack_samples: samples_from_ms(sample_rate_hz, attack_ms),
+            release_samples: samples_from_ms(sample_rate_hz, release_ms),
+            attack_pos: 0,
+            release_pos: 0,
+            pulse_amp: 0.0,
+        }
+    }
+
+    fn set_attack_ms(&mut self, sample_rate_hz: f32, attack_ms: f32) {
+        self.attack_samples = samples_from_ms(sample_rate_hz, attack_ms);
+    }
+
+    fn set_release_ms(&mut self, sample_rate_hz: f32, release_ms: f32) {
+        self.release_samples = samples_from_ms(sample_rate_hz, release_ms);
+    }
+
+    fn trigger(&mut self, pulse_amp: f32) {
+        self.pulse_amp = pulse_amp;
+        self.attack_pos = 0;
+        self.release_pos = 0;
+    }
+
+    #[inline]
+    fn sample(&mut self) -> f32 {
+        if self.pulse_amp == 0.0 {
+            return 0.0;
+        }
+
+        if self.attack_pos < self.attack_samples {
+            self.attack_pos = self.attack_pos.saturating_add(1);
+            let t = self.attack_pos as f32 / self.attack_samples as f32;
+            return self.pulse_amp * t;
+        }
+
+        if self.release_pos < self.release_samples {
+            self.release_pos = self.release_pos.saturating_add(1);
+            let remaining = (self.release_samples - self.release_pos) as f32;
+            let t = remaining / self.release_samples as f32;
+            return self.pulse_amp * t;
+        }
+
+        self.pulse_amp = 0.0;
+        0.0
+    }
+}
 
 /// Realtime-safe mass-spring-damper engine integrated with semi-implicit Euler.
 ///
@@ -33,9 +93,7 @@ pub struct Engine {
     inv_sample_rate: f32,
     params: EngineParams,
     gate: bool,
-    env: f32,
-    attack_coeff: f32,
-    release_coeff: f32,
+    exciter: StrikeExciter,
     positions: [f32; MAX_MODES],
     velocities: [f32; MAX_MODES],
     mass: [f32; MAX_MODES],
@@ -56,16 +114,13 @@ pub struct Engine {
 impl Engine {
     pub fn new(sample_rate_hz: f32, params: EngineParams) -> Self {
         let sample_rate_hz = sample_rate_hz.max(1.0);
-        let attack_coeff = coeff_from_ms(sample_rate_hz, 2.0);
-        let release_coeff = coeff_from_ms(sample_rate_hz, 40.0);
+        let exciter = StrikeExciter::new(sample_rate_hz, 2.0, 40.0);
         let mut engine = Self {
             sample_rate_hz,
             inv_sample_rate: 1.0 / sample_rate_hz,
             params,
             gate: false,
-            env: 0.0,
-            attack_coeff,
-            release_coeff,
+            exciter,
             positions: [0.0; MAX_MODES],
             velocities: [0.0; MAX_MODES],
             mass: [1.0; MAX_MODES],
@@ -76,7 +131,7 @@ impl Engine {
             mix_weights: [0.0; MAX_MODES],
             coupling_position: [[0.0; MAX_MODES]; MAX_MODES],
             coupling_velocity: [[0.0; MAX_MODES]; MAX_MODES],
-            excitation_gain: 6.0,
+            excitation_gain: DEFAULT_EXCITATION_GAIN,
             output_gain: DEFAULT_OUTPUT_GAIN,
             inharmonicity: DEFAULT_INHARMONICITY,
             position_coupling_base: DEFAULT_POSITION_COUPLING,
@@ -113,12 +168,14 @@ impl Engine {
 
     #[inline]
     pub fn set_attack_ms(&mut self, attack_ms: f32) {
-        self.attack_coeff = coeff_from_ms(self.sample_rate_hz, attack_ms);
+        self.exciter
+            .set_attack_ms(self.sample_rate_hz, attack_ms.max(0.000_1));
     }
 
     #[inline]
     pub fn set_release_ms(&mut self, release_ms: f32) {
-        self.release_coeff = coeff_from_ms(self.sample_rate_hz, release_ms);
+        self.exciter
+            .set_release_ms(self.sample_rate_hz, release_ms.max(0.000_1));
     }
 
     #[inline]
@@ -159,6 +216,12 @@ impl Engine {
     }
 
     #[inline]
+    pub fn set_excitation_gain(&mut self, value: f32) {
+        let (min, max) = EXCITATION_GAIN_RANGE;
+        self.excitation_gain = value.clamp(min, max);
+    }
+
+    #[inline]
     pub fn set_output_gain(&mut self, value: f32) {
         let (min, max) = OUTPUT_GAIN_RANGE;
         let clamped = value.clamp(min, max);
@@ -167,29 +230,19 @@ impl Engine {
 
     #[inline]
     pub fn trigger(&mut self, amplitude: f32) {
-        let energy = amplitude.max(0.0).min(1.0) * self.excitation_gain;
         for mode in 0..MAX_MODES {
             self.positions[mode] = 0.0;
-            let harmonic = (mode + 1) as f32;
-            let scale = 1.0 / harmonic;
-            self.velocities[mode] = energy * scale;
+            self.velocities[mode] = 0.0;
         }
+
+        let pulse_amp = amplitude.max(0.0).min(1.0) * self.excitation_gain;
+        self.exciter.trigger(pulse_amp);
     }
 
     /// Semi-implicit Euler integration for a mass-spring-damper driven by `amplitude`.
     #[inline]
     pub fn next_sample(&mut self) -> f32 {
-        let target = if self.gate {
-            self.params.amplitude
-        } else {
-            0.0
-        };
-        let coeff = if self.gate {
-            self.attack_coeff
-        } else {
-            self.release_coeff
-        };
-        self.env += (target - self.env) * coeff;
+        let exciter_level = self.exciter.sample();
 
         let prev_positions = self.positions;
         let prev_velocities = self.velocities;
@@ -206,7 +259,7 @@ impl Engine {
                 coupling_force += self.coupling_velocity[mode][other] * vel_diff;
             }
 
-            let drive = self.env * self.stiffness[mode];
+            let drive = exciter_level * self.stiffness[mode];
             let restoring = self.stiffness[mode] * prev_positions[mode];
             let damping_force = self.damping[mode] * prev_velocities[mode];
             let acceleration =
@@ -288,9 +341,10 @@ impl Engine {
 }
 
 #[inline]
-fn coeff_from_ms(sample_rate_hz: f32, time_ms: f32) -> f32 {
+fn samples_from_ms(sample_rate_hz: f32, time_ms: f32) -> u32 {
     let time_s = (time_ms / 1000.0).max(0.000_001);
-    1.0 - (-1.0 / (time_s * sample_rate_hz)).exp()
+    let samples = (time_s * sample_rate_hz).round();
+    samples.max(1.0) as u32
 }
 
 #[inline]

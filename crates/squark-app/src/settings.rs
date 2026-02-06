@@ -24,6 +24,8 @@ struct StoredSettings {
     position_coupling: f32,
     #[serde(default = "default_velocity_coupling")]
     velocity_coupling: f32,
+    #[serde(default = "default_excitation_gain")]
+    excitation_gain: f32,
     #[serde(default = "default_output_gain")]
     output_gain: f32,
     midi_cc: HashMap<String, u8>,
@@ -38,6 +40,7 @@ impl Default for StoredSettings {
             inharmonicity: crate::DEFAULT_INHARMONICITY,
             position_coupling: crate::DEFAULT_POSITION_COUPLING,
             velocity_coupling: crate::DEFAULT_VELOCITY_COUPLING,
+            excitation_gain: crate::DEFAULT_EXCITATION_GAIN,
             output_gain: crate::DEFAULT_OUTPUT_GAIN,
             midi_cc: HashMap::new(),
         }
@@ -51,6 +54,7 @@ pub(crate) struct SettingsSnapshot {
     pub inharmonicity: f32,
     pub position_coupling: f32,
     pub velocity_coupling: f32,
+    pub excitation_gain: f32,
     pub output_gain: f32,
     pub midi_assignments: Vec<(ParameterId, u8)>,
 }
@@ -71,6 +75,7 @@ impl From<StoredSettings> for SettingsSnapshot {
             inharmonicity: ParameterId::Inharmonicity.clamp(value.inharmonicity),
             position_coupling: ParameterId::PositionCoupling.clamp(value.position_coupling),
             velocity_coupling: ParameterId::VelocityCoupling.clamp(value.velocity_coupling),
+            excitation_gain: ParameterId::ExcitationGain.clamp(value.excitation_gain),
             output_gain: ParameterId::OutputGain.clamp(value.output_gain),
             midi_assignments,
         }
@@ -108,6 +113,7 @@ impl SettingsStore {
                 ParameterId::Inharmonicity => data.inharmonicity = clamped,
                 ParameterId::PositionCoupling => data.position_coupling = clamped,
                 ParameterId::VelocityCoupling => data.velocity_coupling = clamped,
+                ParameterId::ExcitationGain => data.excitation_gain = clamped,
                 ParameterId::OutputGain => data.output_gain = clamped,
             }
         }
@@ -126,6 +132,21 @@ impl SettingsStore {
         {
             let mut data = self.state.lock();
             data.midi_cc.remove(param.storage_key());
+        }
+        self.persist_current_state()
+    }
+
+    pub(crate) fn reset_parameters(&self) -> Result<()> {
+        {
+            let mut data = self.state.lock();
+            data.attack_ms = crate::DEFAULT_ATTACK_MS;
+            data.release_ms = crate::DEFAULT_RELEASE_MS;
+            data.damping_ratio = crate::DEFAULT_DAMPING_RATIO;
+            data.inharmonicity = crate::DEFAULT_INHARMONICITY;
+            data.position_coupling = crate::DEFAULT_POSITION_COUPLING;
+            data.velocity_coupling = crate::DEFAULT_VELOCITY_COUPLING;
+            data.excitation_gain = crate::DEFAULT_EXCITATION_GAIN;
+            data.output_gain = crate::DEFAULT_OUTPUT_GAIN;
         }
         self.persist_current_state()
     }
@@ -200,6 +221,10 @@ fn default_position_coupling() -> f32 {
 
 fn default_velocity_coupling() -> f32 {
     crate::DEFAULT_VELOCITY_COUPLING
+}
+
+fn default_excitation_gain() -> f32 {
+    crate::DEFAULT_EXCITATION_GAIN
 }
 
 fn default_output_gain() -> f32 {

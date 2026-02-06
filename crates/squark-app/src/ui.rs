@@ -12,8 +12,8 @@ pub fn launch(
 ) -> anyhow::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([420.0, 360.0])
-            .with_min_inner_size([360.0, 260.0]),
+            .with_inner_size([560.0, 520.0])
+            .with_min_inner_size([420.0, 360.0]),
         ..Default::default()
     };
 
@@ -130,6 +130,12 @@ impl eframe::App for SquarkApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Squark mass-spring");
             ui.label("Shape envelopes and resonator couplings or map them to MIDI CCs.");
+            if ui.button("Reset parameters").clicked() {
+                self.control.reset_parameters();
+                if let Err(err) = self.settings.reset_parameters() {
+                    eprintln!("Warning: Failed to persist parameter reset: {err}");
+                }
+            }
             ui.separator();
 
             for &param in ParameterId::all() {

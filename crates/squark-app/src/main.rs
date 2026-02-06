@@ -11,6 +11,7 @@ use midir::{Ignore, MidiInput};
 use parking_lot::Mutex;
 
 use squark_engine::{
+    DEFAULT_EXCITATION_GAIN as ENGINE_DEFAULT_EXCITATION_GAIN,
     DEFAULT_INHARMONICITY as ENGINE_DEFAULT_INHARMONICITY,
     DEFAULT_OUTPUT_GAIN as ENGINE_DEFAULT_OUTPUT_GAIN,
     DEFAULT_POSITION_COUPLING as ENGINE_DEFAULT_POSITION_COUPLING,
@@ -21,10 +22,11 @@ use settings::SettingsStore;
 
 pub(crate) const DEFAULT_ATTACK_MS: f32 = 2.0;
 pub(crate) const DEFAULT_RELEASE_MS: f32 = 400.0;
-pub(crate) const DEFAULT_DAMPING_RATIO: f32 = 0.02;
+pub(crate) const DEFAULT_DAMPING_RATIO: f32 = 0.002;
 pub(crate) const DEFAULT_INHARMONICITY: f32 = ENGINE_DEFAULT_INHARMONICITY;
 pub(crate) const DEFAULT_POSITION_COUPLING: f32 = ENGINE_DEFAULT_POSITION_COUPLING;
 pub(crate) const DEFAULT_VELOCITY_COUPLING: f32 = ENGINE_DEFAULT_VELOCITY_COUPLING;
+pub(crate) const DEFAULT_EXCITATION_GAIN: f32 = ENGINE_DEFAULT_EXCITATION_GAIN;
 pub(crate) const DEFAULT_OUTPUT_GAIN: f32 = ENGINE_DEFAULT_OUTPUT_GAIN;
 const ATTACK_RANGE_MS: (f32, f32) = (0.5, 200.0);
 const RELEASE_RANGE_MS: (f32, f32) = (20.0, 2000.0);
@@ -32,6 +34,7 @@ const DAMPING_RATIO_RANGE: (f32, f32) = (0.001, 0.2);
 const INHARMONICITY_RANGE: (f32, f32) = (0.8, 1.4);
 const POSITION_COUPLING_RANGE: (f32, f32) = (-1.0, 1.0);
 const VELOCITY_COUPLING_RANGE: (f32, f32) = (-1.0, 1.0);
+const EXCITATION_GAIN_RANGE: (f32, f32) = (0.1, 20.0);
 const OUTPUT_GAIN_RANGE: (f32, f32) = (0.05, 4.0);
 const PEAK_HALF_LIFE_S: f32 = 0.5;
 const PEAK_DECAY_TAU: f32 = PEAK_HALF_LIFE_S / core::f32::consts::LN_2;
@@ -50,6 +53,7 @@ struct ControlBlock {
     inharmonicity_bits: AtomicU32,
     position_coupling_bits: AtomicU32,
     velocity_coupling_bits: AtomicU32,
+    excitation_gain_bits: AtomicU32,
     output_gain_bits: AtomicU32,
 }
 
@@ -68,6 +72,7 @@ impl ControlBlock {
             inharmonicity_bits: AtomicU32::new(DEFAULT_INHARMONICITY.to_bits()),
             position_coupling_bits: AtomicU32::new(DEFAULT_POSITION_COUPLING.to_bits()),
             velocity_coupling_bits: AtomicU32::new(DEFAULT_VELOCITY_COUPLING.to_bits()),
+            excitation_gain_bits: AtomicU32::new(DEFAULT_EXCITATION_GAIN.to_bits()),
             output_gain_bits: AtomicU32::new(DEFAULT_OUTPUT_GAIN.to_bits()),
         }
     }
@@ -85,6 +90,7 @@ impl ControlBlock {
             inharmonicity: f32::from_bits(self.inharmonicity_bits.load(Ordering::Relaxed)),
             position_coupling: f32::from_bits(self.position_coupling_bits.load(Ordering::Relaxed)),
             velocity_coupling: f32::from_bits(self.velocity_coupling_bits.load(Ordering::Relaxed)),
+            excitation_gain: f32::from_bits(self.excitation_gain_bits.load(Ordering::Relaxed)),
             output_gain: f32::from_bits(self.output_gain_bits.load(Ordering::Relaxed)),
         }
     }
@@ -161,6 +167,17 @@ impl ControlBlock {
     }
 
     #[inline]
+    fn excitation_gain(&self) -> f32 {
+        f32::from_bits(self.excitation_gain_bits.load(Ordering::Relaxed))
+    }
+
+    #[inline]
+    fn set_excitation_gain(&self, value: f32) {
+        self.excitation_gain_bits
+            .store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    #[inline]
     fn output_gain(&self) -> f32 {
         f32::from_bits(self.output_gain_bits.load(Ordering::Relaxed))
     }
@@ -202,6 +219,7 @@ impl ControlBlock {
             ParameterId::Inharmonicity => self.inharmonicity(),
             ParameterId::PositionCoupling => self.position_coupling(),
             ParameterId::VelocityCoupling => self.velocity_coupling(),
+            ParameterId::ExcitationGain => self.excitation_gain(),
             ParameterId::OutputGain => self.output_gain(),
         }
     }
@@ -215,8 +233,20 @@ impl ControlBlock {
             ParameterId::Inharmonicity => self.set_inharmonicity(value),
             ParameterId::PositionCoupling => self.set_position_coupling(value),
             ParameterId::VelocityCoupling => self.set_velocity_coupling(value),
+            ParameterId::ExcitationGain => self.set_excitation_gain(value),
             ParameterId::OutputGain => self.set_output_gain(value),
         }
+    }
+
+    fn reset_parameters(&self) {
+        self.set_attack_ms(DEFAULT_ATTACK_MS);
+        self.set_release_ms(DEFAULT_RELEASE_MS);
+        self.set_damping_ratio(DEFAULT_DAMPING_RATIO);
+        self.set_inharmonicity(DEFAULT_INHARMONICITY);
+        self.set_position_coupling(DEFAULT_POSITION_COUPLING);
+        self.set_velocity_coupling(DEFAULT_VELOCITY_COUPLING);
+        self.set_excitation_gain(DEFAULT_EXCITATION_GAIN);
+        self.set_output_gain(DEFAULT_OUTPUT_GAIN);
     }
 }
 
@@ -232,6 +262,7 @@ struct ControlSnapshot {
     inharmonicity: f32,
     position_coupling: f32,
     velocity_coupling: f32,
+    excitation_gain: f32,
     output_gain: f32,
 }
 
@@ -243,16 +274,18 @@ pub enum ParameterId {
     Inharmonicity,
     PositionCoupling,
     VelocityCoupling,
+    ExcitationGain,
     OutputGain,
 }
 
-const PARAMETER_ORDER: [ParameterId; 7] = [
+const PARAMETER_ORDER: [ParameterId; 8] = [
     ParameterId::AttackMs,
     ParameterId::ReleaseMs,
     ParameterId::DampingRatio,
     ParameterId::Inharmonicity,
     ParameterId::PositionCoupling,
     ParameterId::VelocityCoupling,
+    ParameterId::ExcitationGain,
     ParameterId::OutputGain,
 ];
 
@@ -265,7 +298,8 @@ impl ParameterId {
             ParameterId::Inharmonicity => 3,
             ParameterId::PositionCoupling => 4,
             ParameterId::VelocityCoupling => 5,
-            ParameterId::OutputGain => 6,
+            ParameterId::ExcitationGain => 6,
+            ParameterId::OutputGain => 7,
         }
     }
 
@@ -277,7 +311,8 @@ impl ParameterId {
             3 => Some(ParameterId::Inharmonicity),
             4 => Some(ParameterId::PositionCoupling),
             5 => Some(ParameterId::VelocityCoupling),
-            6 => Some(ParameterId::OutputGain),
+            6 => Some(ParameterId::ExcitationGain),
+            7 => Some(ParameterId::OutputGain),
             _ => None,
         }
     }
@@ -294,6 +329,7 @@ impl ParameterId {
             ParameterId::Inharmonicity => "Inharmonicity",
             ParameterId::PositionCoupling => "Position coupling",
             ParameterId::VelocityCoupling => "Velocity coupling",
+            ParameterId::ExcitationGain => "Excitation gain",
             ParameterId::OutputGain => "Output gain",
         }
     }
@@ -306,6 +342,7 @@ impl ParameterId {
             ParameterId::Inharmonicity => INHARMONICITY_RANGE,
             ParameterId::PositionCoupling => POSITION_COUPLING_RANGE,
             ParameterId::VelocityCoupling => VELOCITY_COUPLING_RANGE,
+            ParameterId::ExcitationGain => EXCITATION_GAIN_RANGE,
             ParameterId::OutputGain => OUTPUT_GAIN_RANGE,
         }
     }
@@ -326,6 +363,7 @@ impl ParameterId {
             ParameterId::AttackMs
                 | ParameterId::ReleaseMs
                 | ParameterId::DampingRatio
+                | ParameterId::ExcitationGain
                 | ParameterId::OutputGain
         )
     }
@@ -338,6 +376,7 @@ impl ParameterId {
             ParameterId::PositionCoupling | ParameterId::VelocityCoupling => {
                 format!("{value:.3}")
             }
+            ParameterId::ExcitationGain => format!("{value:.2}×"),
             ParameterId::OutputGain => format!("{value:.2}×"),
         }
     }
@@ -356,6 +395,7 @@ impl ParameterId {
             ParameterId::Inharmonicity => "inharmonicity",
             ParameterId::PositionCoupling => "position_coupling",
             ParameterId::VelocityCoupling => "velocity_coupling",
+            ParameterId::ExcitationGain => "excitation_gain",
             ParameterId::OutputGain => "output_gain",
         }
     }
@@ -368,6 +408,7 @@ impl ParameterId {
             "inharmonicity" => Some(ParameterId::Inharmonicity),
             "position_coupling" => Some(ParameterId::PositionCoupling),
             "velocity_coupling" => Some(ParameterId::VelocityCoupling),
+            "excitation_gain" => Some(ParameterId::ExcitationGain),
             "output_gain" => Some(ParameterId::OutputGain),
             _ => None,
         }
@@ -583,6 +624,7 @@ fn main() -> anyhow::Result<()> {
     control.set_inharmonicity(snapshot.inharmonicity);
     control.set_position_coupling(snapshot.position_coupling);
     control.set_velocity_coupling(snapshot.velocity_coupling);
+    control.set_excitation_gain(snapshot.excitation_gain);
     control.set_output_gain(snapshot.output_gain);
 
     let midi_learn = Arc::new(MidiLearnState::new());
@@ -860,6 +902,7 @@ where
                 engine.set_inharmonicity(snapshot.inharmonicity);
                 engine.set_position_coupling_base(snapshot.position_coupling);
                 engine.set_velocity_coupling_base(snapshot.velocity_coupling);
+                engine.set_excitation_gain(snapshot.excitation_gain);
                 engine.set_output_gain(snapshot.output_gain);
                 if snapshot.trigger_counter != trigger_seen {
                     engine.trigger(snapshot.amplitude);
