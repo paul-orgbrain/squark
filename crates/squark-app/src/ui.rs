@@ -4,6 +4,7 @@ use anyhow::anyhow;
 use eframe::{self, egui};
 
 use crate::{ControlBlock, MidiLearnState, ParameterId, settings::SettingsStore};
+use squark_engine::ExciterMode;
 
 pub fn launch(
     control: Arc<ControlBlock>,
@@ -52,13 +53,13 @@ impl SquarkApp {
         }
     }
 
-    fn draw_parameter(&self, ui: &mut egui::Ui, param: ParameterId) {
+    fn draw_parameter(&self, ui: &mut egui::Ui, param: ParameterId, enabled: bool) {
         let mut value = self.control.parameter_value(param);
         let mut slider = egui::Slider::new(&mut value, param.slider_range()).text(param.label());
         if param.logarithmic() {
             slider = slider.logarithmic(true);
         }
-        if ui.add(slider).changed() {
+        if ui.add_enabled(enabled, slider).changed() {
             let clamped = param.clamp(value);
             self.control.set_parameter_value(param, clamped);
             if let Err(err) = self.settings.update_parameter(param, clamped) {
@@ -77,7 +78,7 @@ impl SquarkApp {
                 "MIDI Learn"
             };
             if row
-                .add_enabled(!other_pending, egui::Button::new(button_label))
+                .add_enabled(enabled && !other_pending, egui::Button::new(button_label))
                 .clicked()
             {
                 if listening {
@@ -130,6 +131,41 @@ impl eframe::App for SquarkApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Squark mass-spring");
             ui.label("Shape envelopes and resonator couplings or map them to MIDI CCs.");
+
+            ui.horizontal(|row| {
+                row.label("Exciter mode");
+                let mut mode_u8 = self.control.exciter_mode();
+                let mode = ExciterMode::from_u8(mode_u8);
+                let mut selected = match mode {
+                    ExciterMode::Strike => "Strike",
+                    ExciterMode::Breath => "Breath",
+                };
+
+                egui::ComboBox::from_id_source("exciter_mode")
+                    .selected_text(selected)
+                    .show_ui(row, |combo: &mut egui::Ui| {
+                        combo.selectable_value(&mut mode_u8, ExciterMode::Strike.as_u8(), "Strike");
+                        combo.selectable_value(&mut mode_u8, ExciterMode::Breath.as_u8(), "Breath");
+                    });
+
+                selected = match ExciterMode::from_u8(mode_u8) {
+                    ExciterMode::Strike => "Strike",
+                    ExciterMode::Breath => "Breath",
+                };
+
+                row.label(match selected {
+                    "Breath" => "(continuous)",
+                    _ => "(pulse)",
+                });
+
+                if mode_u8 != self.control.exciter_mode() {
+                    self.control.set_exciter_mode_u8(mode_u8);
+                    if let Err(err) = self.settings.update_exciter_mode(mode_u8) {
+                        eprintln!("Warning: Failed to persist exciter mode update: {err}");
+                    }
+                }
+            });
+
             if ui.button("Reset parameters").clicked() {
                 self.control.reset_parameters();
                 if let Err(err) = self.settings.reset_parameters() {
@@ -138,8 +174,22 @@ impl eframe::App for SquarkApp {
             }
             ui.separator();
 
+            let breath_mode =
+                ExciterMode::from_u8(self.control.exciter_mode()) == ExciterMode::Breath;
             for &param in ParameterId::all() {
-                self.draw_parameter(ui, param);
+                if param == ParameterId::BreathPressure {
+                    ui.separator();
+                    ui.label("Breath controls (active in Breath mode)");
+                }
+                let enabled = match param {
+                    ParameterId::BreathPressure
+                    | ParameterId::BreathNoiseCutoffHz
+                    | ParameterId::BreathFeedback
+                    | ParameterId::BreathAutoLevel => breath_mode,
+                    _ => true,
+                };
+
+                self.draw_parameter(ui, param, enabled);
                 ui.add_space(8.0);
             }
 

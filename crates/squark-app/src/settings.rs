@@ -15,6 +15,8 @@ const SETTINGS_FILE_NAME: &str = "settings.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredSettings {
+    #[serde(default = "default_exciter_mode")]
+    exciter_mode: u8,
     attack_ms: f32,
     release_ms: f32,
     damping_ratio: f32,
@@ -28,12 +30,21 @@ struct StoredSettings {
     excitation_gain: f32,
     #[serde(default = "default_output_gain")]
     output_gain: f32,
+    #[serde(default = "default_breath_pressure")]
+    breath_pressure: f32,
+    #[serde(default = "default_breath_noise_cutoff_hz")]
+    breath_noise_cutoff_hz: f32,
+    #[serde(default = "default_breath_feedback")]
+    breath_feedback: f32,
+    #[serde(default = "default_breath_auto_level")]
+    breath_auto_level: f32,
     midi_cc: HashMap<String, u8>,
 }
 
 impl Default for StoredSettings {
     fn default() -> Self {
         Self {
+            exciter_mode: default_exciter_mode(),
             attack_ms: crate::DEFAULT_ATTACK_MS,
             release_ms: crate::DEFAULT_RELEASE_MS,
             damping_ratio: crate::DEFAULT_DAMPING_RATIO,
@@ -42,12 +53,17 @@ impl Default for StoredSettings {
             velocity_coupling: crate::DEFAULT_VELOCITY_COUPLING,
             excitation_gain: crate::DEFAULT_EXCITATION_GAIN,
             output_gain: crate::DEFAULT_OUTPUT_GAIN,
+            breath_pressure: crate::DEFAULT_BREATH_PRESSURE,
+            breath_noise_cutoff_hz: crate::DEFAULT_BREATH_NOISE_CUTOFF_HZ,
+            breath_feedback: crate::DEFAULT_BREATH_FEEDBACK,
+            breath_auto_level: crate::DEFAULT_BREATH_AUTO_LEVEL,
             midi_cc: HashMap::new(),
         }
     }
 }
 
 pub(crate) struct SettingsSnapshot {
+    pub exciter_mode: u8,
     pub attack_ms: f32,
     pub release_ms: f32,
     pub damping_ratio: f32,
@@ -56,6 +72,10 @@ pub(crate) struct SettingsSnapshot {
     pub velocity_coupling: f32,
     pub excitation_gain: f32,
     pub output_gain: f32,
+    pub breath_pressure: f32,
+    pub breath_noise_cutoff_hz: f32,
+    pub breath_feedback: f32,
+    pub breath_auto_level: f32,
     pub midi_assignments: Vec<(ParameterId, u8)>,
 }
 
@@ -69,6 +89,7 @@ impl From<StoredSettings> for SettingsSnapshot {
         }
 
         Self {
+            exciter_mode: value.exciter_mode.min(1),
             attack_ms: ParameterId::AttackMs.clamp(value.attack_ms),
             release_ms: ParameterId::ReleaseMs.clamp(value.release_ms),
             damping_ratio: ParameterId::DampingRatio.clamp(value.damping_ratio),
@@ -77,6 +98,11 @@ impl From<StoredSettings> for SettingsSnapshot {
             velocity_coupling: ParameterId::VelocityCoupling.clamp(value.velocity_coupling),
             excitation_gain: ParameterId::ExcitationGain.clamp(value.excitation_gain),
             output_gain: ParameterId::OutputGain.clamp(value.output_gain),
+            breath_pressure: ParameterId::BreathPressure.clamp(value.breath_pressure),
+            breath_noise_cutoff_hz: ParameterId::BreathNoiseCutoffHz
+                .clamp(value.breath_noise_cutoff_hz),
+            breath_feedback: ParameterId::BreathFeedback.clamp(value.breath_feedback),
+            breath_auto_level: ParameterId::BreathAutoLevel.clamp(value.breath_auto_level),
             midi_assignments,
         }
     }
@@ -115,7 +141,19 @@ impl SettingsStore {
                 ParameterId::VelocityCoupling => data.velocity_coupling = clamped,
                 ParameterId::ExcitationGain => data.excitation_gain = clamped,
                 ParameterId::OutputGain => data.output_gain = clamped,
+                ParameterId::BreathPressure => data.breath_pressure = clamped,
+                ParameterId::BreathNoiseCutoffHz => data.breath_noise_cutoff_hz = clamped,
+                ParameterId::BreathFeedback => data.breath_feedback = clamped,
+                ParameterId::BreathAutoLevel => data.breath_auto_level = clamped,
             }
+        }
+        self.persist_current_state()
+    }
+
+    pub(crate) fn update_exciter_mode(&self, mode: u8) -> Result<()> {
+        {
+            let mut data = self.state.lock();
+            data.exciter_mode = mode.min(1);
         }
         self.persist_current_state()
     }
@@ -139,6 +177,7 @@ impl SettingsStore {
     pub(crate) fn reset_parameters(&self) -> Result<()> {
         {
             let mut data = self.state.lock();
+            data.exciter_mode = default_exciter_mode();
             data.attack_ms = crate::DEFAULT_ATTACK_MS;
             data.release_ms = crate::DEFAULT_RELEASE_MS;
             data.damping_ratio = crate::DEFAULT_DAMPING_RATIO;
@@ -147,6 +186,10 @@ impl SettingsStore {
             data.velocity_coupling = crate::DEFAULT_VELOCITY_COUPLING;
             data.excitation_gain = crate::DEFAULT_EXCITATION_GAIN;
             data.output_gain = crate::DEFAULT_OUTPUT_GAIN;
+            data.breath_pressure = crate::DEFAULT_BREATH_PRESSURE;
+            data.breath_noise_cutoff_hz = crate::DEFAULT_BREATH_NOISE_CUTOFF_HZ;
+            data.breath_feedback = crate::DEFAULT_BREATH_FEEDBACK;
+            data.breath_auto_level = crate::DEFAULT_BREATH_AUTO_LEVEL;
         }
         self.persist_current_state()
     }
@@ -229,4 +272,24 @@ fn default_excitation_gain() -> f32 {
 
 fn default_output_gain() -> f32 {
     crate::DEFAULT_OUTPUT_GAIN
+}
+
+fn default_breath_pressure() -> f32 {
+    crate::DEFAULT_BREATH_PRESSURE
+}
+
+fn default_breath_noise_cutoff_hz() -> f32 {
+    crate::DEFAULT_BREATH_NOISE_CUTOFF_HZ
+}
+
+fn default_breath_feedback() -> f32 {
+    crate::DEFAULT_BREATH_FEEDBACK
+}
+
+fn default_breath_auto_level() -> f32 {
+    crate::DEFAULT_BREATH_AUTO_LEVEL
+}
+
+fn default_exciter_mode() -> u8 {
+    0
 }

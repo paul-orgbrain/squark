@@ -11,11 +11,16 @@ use midir::{Ignore, MidiInput};
 use parking_lot::Mutex;
 
 use squark_engine::{
+    DEFAULT_BREATH_AUTO_LEVEL as ENGINE_DEFAULT_BREATH_AUTO_LEVEL,
+    DEFAULT_BREATH_FEEDBACK as ENGINE_DEFAULT_BREATH_FEEDBACK,
+    DEFAULT_BREATH_NOISE_CUTOFF_HZ as ENGINE_DEFAULT_BREATH_NOISE_CUTOFF_HZ,
+    DEFAULT_BREATH_PRESSURE as ENGINE_DEFAULT_BREATH_PRESSURE,
     DEFAULT_EXCITATION_GAIN as ENGINE_DEFAULT_EXCITATION_GAIN,
     DEFAULT_INHARMONICITY as ENGINE_DEFAULT_INHARMONICITY,
     DEFAULT_OUTPUT_GAIN as ENGINE_DEFAULT_OUTPUT_GAIN,
     DEFAULT_POSITION_COUPLING as ENGINE_DEFAULT_POSITION_COUPLING,
     DEFAULT_VELOCITY_COUPLING as ENGINE_DEFAULT_VELOCITY_COUPLING, Engine, EngineParams,
+    ExciterMode,
 };
 
 use settings::SettingsStore;
@@ -28,6 +33,10 @@ pub(crate) const DEFAULT_POSITION_COUPLING: f32 = ENGINE_DEFAULT_POSITION_COUPLI
 pub(crate) const DEFAULT_VELOCITY_COUPLING: f32 = ENGINE_DEFAULT_VELOCITY_COUPLING;
 pub(crate) const DEFAULT_EXCITATION_GAIN: f32 = ENGINE_DEFAULT_EXCITATION_GAIN;
 pub(crate) const DEFAULT_OUTPUT_GAIN: f32 = ENGINE_DEFAULT_OUTPUT_GAIN;
+pub(crate) const DEFAULT_BREATH_PRESSURE: f32 = ENGINE_DEFAULT_BREATH_PRESSURE;
+pub(crate) const DEFAULT_BREATH_FEEDBACK: f32 = ENGINE_DEFAULT_BREATH_FEEDBACK;
+pub(crate) const DEFAULT_BREATH_AUTO_LEVEL: f32 = ENGINE_DEFAULT_BREATH_AUTO_LEVEL;
+pub(crate) const DEFAULT_BREATH_NOISE_CUTOFF_HZ: f32 = ENGINE_DEFAULT_BREATH_NOISE_CUTOFF_HZ;
 const ATTACK_RANGE_MS: (f32, f32) = (0.5, 200.0);
 const RELEASE_RANGE_MS: (f32, f32) = (20.0, 2000.0);
 const DAMPING_RATIO_RANGE: (f32, f32) = (0.001, 0.2);
@@ -36,6 +45,10 @@ const POSITION_COUPLING_RANGE: (f32, f32) = (-1.0, 1.0);
 const VELOCITY_COUPLING_RANGE: (f32, f32) = (-1.0, 1.0);
 const EXCITATION_GAIN_RANGE: (f32, f32) = (0.1, 20.0);
 const OUTPUT_GAIN_RANGE: (f32, f32) = (0.05, 4.0);
+const BREATH_PRESSURE_RANGE: (f32, f32) = (0.0, 4.0);
+const BREATH_FEEDBACK_RANGE: (f32, f32) = (0.0, 1.5);
+const BREATH_AUTO_LEVEL_RANGE: (f32, f32) = (0.0, 20.0);
+const BREATH_NOISE_CUTOFF_HZ_RANGE: (f32, f32) = (50.0, 8000.0);
 const PEAK_HALF_LIFE_S: f32 = 0.5;
 const PEAK_DECAY_TAU: f32 = PEAK_HALF_LIFE_S / core::f32::consts::LN_2;
 
@@ -46,6 +59,7 @@ struct ControlBlock {
     amplitude_bits: AtomicU32,
     active_note: AtomicU8,
     trigger_counter: AtomicU32,
+    exciter_mode: AtomicU8,
     attack_ms_bits: AtomicU32,
     release_ms_bits: AtomicU32,
     damping_ratio_bits: AtomicU32,
@@ -55,6 +69,10 @@ struct ControlBlock {
     velocity_coupling_bits: AtomicU32,
     excitation_gain_bits: AtomicU32,
     output_gain_bits: AtomicU32,
+    breath_pressure_bits: AtomicU32,
+    breath_noise_cutoff_hz_bits: AtomicU32,
+    breath_feedback_bits: AtomicU32,
+    breath_auto_level_bits: AtomicU32,
 }
 
 impl ControlBlock {
@@ -65,6 +83,7 @@ impl ControlBlock {
             amplitude_bits: AtomicU32::new(initial.amplitude.to_bits()),
             active_note: AtomicU8::new(0),
             trigger_counter: AtomicU32::new(0),
+            exciter_mode: AtomicU8::new(ExciterMode::Strike.as_u8()),
             attack_ms_bits: AtomicU32::new(DEFAULT_ATTACK_MS.to_bits()),
             release_ms_bits: AtomicU32::new(DEFAULT_RELEASE_MS.to_bits()),
             damping_ratio_bits: AtomicU32::new(DEFAULT_DAMPING_RATIO.to_bits()),
@@ -74,6 +93,10 @@ impl ControlBlock {
             velocity_coupling_bits: AtomicU32::new(DEFAULT_VELOCITY_COUPLING.to_bits()),
             excitation_gain_bits: AtomicU32::new(DEFAULT_EXCITATION_GAIN.to_bits()),
             output_gain_bits: AtomicU32::new(DEFAULT_OUTPUT_GAIN.to_bits()),
+            breath_pressure_bits: AtomicU32::new(DEFAULT_BREATH_PRESSURE.to_bits()),
+            breath_noise_cutoff_hz_bits: AtomicU32::new(DEFAULT_BREATH_NOISE_CUTOFF_HZ.to_bits()),
+            breath_feedback_bits: AtomicU32::new(DEFAULT_BREATH_FEEDBACK.to_bits()),
+            breath_auto_level_bits: AtomicU32::new(DEFAULT_BREATH_AUTO_LEVEL.to_bits()),
         }
     }
 
@@ -84,6 +107,7 @@ impl ControlBlock {
             frequency_hz: f32::from_bits(self.frequency_bits.load(Ordering::Relaxed)),
             amplitude: f32::from_bits(self.amplitude_bits.load(Ordering::Relaxed)),
             trigger_counter: self.trigger_counter.load(Ordering::Relaxed),
+            exciter_mode: self.exciter_mode.load(Ordering::Relaxed),
             attack_ms: f32::from_bits(self.attack_ms_bits.load(Ordering::Relaxed)),
             release_ms: f32::from_bits(self.release_ms_bits.load(Ordering::Relaxed)),
             damping_ratio: f32::from_bits(self.damping_ratio_bits.load(Ordering::Relaxed)),
@@ -92,12 +116,29 @@ impl ControlBlock {
             velocity_coupling: f32::from_bits(self.velocity_coupling_bits.load(Ordering::Relaxed)),
             excitation_gain: f32::from_bits(self.excitation_gain_bits.load(Ordering::Relaxed)),
             output_gain: f32::from_bits(self.output_gain_bits.load(Ordering::Relaxed)),
+            breath_pressure: f32::from_bits(self.breath_pressure_bits.load(Ordering::Relaxed)),
+            breath_noise_cutoff_hz: f32::from_bits(
+                self.breath_noise_cutoff_hz_bits.load(Ordering::Relaxed),
+            ),
+            breath_feedback: f32::from_bits(self.breath_feedback_bits.load(Ordering::Relaxed)),
+            breath_auto_level: f32::from_bits(self.breath_auto_level_bits.load(Ordering::Relaxed)),
         }
     }
 
     #[inline]
     fn trigger_counter(&self) -> u32 {
         self.trigger_counter.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    fn exciter_mode(&self) -> u8 {
+        self.exciter_mode.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    fn set_exciter_mode_u8(&self, mode: u8) {
+        // Stable storage: 0 = strike, 1 = breath
+        self.exciter_mode.store(mode.min(1), Ordering::Relaxed);
     }
 
     #[inline]
@@ -189,6 +230,50 @@ impl ControlBlock {
     }
 
     #[inline]
+    fn breath_pressure(&self) -> f32 {
+        f32::from_bits(self.breath_pressure_bits.load(Ordering::Relaxed))
+    }
+
+    #[inline]
+    fn set_breath_pressure(&self, value: f32) {
+        self.breath_pressure_bits
+            .store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn breath_noise_cutoff_hz(&self) -> f32 {
+        f32::from_bits(self.breath_noise_cutoff_hz_bits.load(Ordering::Relaxed))
+    }
+
+    #[inline]
+    fn set_breath_noise_cutoff_hz(&self, value: f32) {
+        self.breath_noise_cutoff_hz_bits
+            .store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn breath_feedback(&self) -> f32 {
+        f32::from_bits(self.breath_feedback_bits.load(Ordering::Relaxed))
+    }
+
+    #[inline]
+    fn set_breath_feedback(&self, value: f32) {
+        self.breath_feedback_bits
+            .store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn breath_auto_level(&self) -> f32 {
+        f32::from_bits(self.breath_auto_level_bits.load(Ordering::Relaxed))
+    }
+
+    #[inline]
+    fn set_breath_auto_level(&self, value: f32) {
+        self.breath_auto_level_bits
+            .store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    #[inline]
     fn peak_level(&self) -> f32 {
         f32::from_bits(self.peak_bits.load(Ordering::Relaxed))
     }
@@ -221,6 +306,10 @@ impl ControlBlock {
             ParameterId::VelocityCoupling => self.velocity_coupling(),
             ParameterId::ExcitationGain => self.excitation_gain(),
             ParameterId::OutputGain => self.output_gain(),
+            ParameterId::BreathPressure => self.breath_pressure(),
+            ParameterId::BreathNoiseCutoffHz => self.breath_noise_cutoff_hz(),
+            ParameterId::BreathFeedback => self.breath_feedback(),
+            ParameterId::BreathAutoLevel => self.breath_auto_level(),
         }
     }
 
@@ -235,10 +324,15 @@ impl ControlBlock {
             ParameterId::VelocityCoupling => self.set_velocity_coupling(value),
             ParameterId::ExcitationGain => self.set_excitation_gain(value),
             ParameterId::OutputGain => self.set_output_gain(value),
+            ParameterId::BreathPressure => self.set_breath_pressure(value),
+            ParameterId::BreathNoiseCutoffHz => self.set_breath_noise_cutoff_hz(value),
+            ParameterId::BreathFeedback => self.set_breath_feedback(value),
+            ParameterId::BreathAutoLevel => self.set_breath_auto_level(value),
         }
     }
 
     fn reset_parameters(&self) {
+        self.set_exciter_mode_u8(ExciterMode::Strike.as_u8());
         self.set_attack_ms(DEFAULT_ATTACK_MS);
         self.set_release_ms(DEFAULT_RELEASE_MS);
         self.set_damping_ratio(DEFAULT_DAMPING_RATIO);
@@ -247,6 +341,10 @@ impl ControlBlock {
         self.set_velocity_coupling(DEFAULT_VELOCITY_COUPLING);
         self.set_excitation_gain(DEFAULT_EXCITATION_GAIN);
         self.set_output_gain(DEFAULT_OUTPUT_GAIN);
+        self.set_breath_pressure(DEFAULT_BREATH_PRESSURE);
+        self.set_breath_noise_cutoff_hz(DEFAULT_BREATH_NOISE_CUTOFF_HZ);
+        self.set_breath_feedback(DEFAULT_BREATH_FEEDBACK);
+        self.set_breath_auto_level(DEFAULT_BREATH_AUTO_LEVEL);
     }
 }
 
@@ -256,6 +354,7 @@ struct ControlSnapshot {
     frequency_hz: f32,
     amplitude: f32,
     trigger_counter: u32,
+    exciter_mode: u8,
     attack_ms: f32,
     release_ms: f32,
     damping_ratio: f32,
@@ -264,6 +363,10 @@ struct ControlSnapshot {
     velocity_coupling: f32,
     excitation_gain: f32,
     output_gain: f32,
+    breath_pressure: f32,
+    breath_noise_cutoff_hz: f32,
+    breath_feedback: f32,
+    breath_auto_level: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -276,9 +379,13 @@ pub enum ParameterId {
     VelocityCoupling,
     ExcitationGain,
     OutputGain,
+    BreathPressure,
+    BreathNoiseCutoffHz,
+    BreathFeedback,
+    BreathAutoLevel,
 }
 
-const PARAMETER_ORDER: [ParameterId; 8] = [
+const PARAMETER_ORDER: [ParameterId; 12] = [
     ParameterId::AttackMs,
     ParameterId::ReleaseMs,
     ParameterId::DampingRatio,
@@ -287,6 +394,10 @@ const PARAMETER_ORDER: [ParameterId; 8] = [
     ParameterId::VelocityCoupling,
     ParameterId::ExcitationGain,
     ParameterId::OutputGain,
+    ParameterId::BreathPressure,
+    ParameterId::BreathNoiseCutoffHz,
+    ParameterId::BreathFeedback,
+    ParameterId::BreathAutoLevel,
 ];
 
 impl ParameterId {
@@ -300,6 +411,10 @@ impl ParameterId {
             ParameterId::VelocityCoupling => 5,
             ParameterId::ExcitationGain => 6,
             ParameterId::OutputGain => 7,
+            ParameterId::BreathPressure => 8,
+            ParameterId::BreathFeedback => 9,
+            ParameterId::BreathAutoLevel => 10,
+            ParameterId::BreathNoiseCutoffHz => 11,
         }
     }
 
@@ -313,6 +428,10 @@ impl ParameterId {
             5 => Some(ParameterId::VelocityCoupling),
             6 => Some(ParameterId::ExcitationGain),
             7 => Some(ParameterId::OutputGain),
+            8 => Some(ParameterId::BreathPressure),
+            9 => Some(ParameterId::BreathFeedback),
+            10 => Some(ParameterId::BreathAutoLevel),
+            11 => Some(ParameterId::BreathNoiseCutoffHz),
             _ => None,
         }
     }
@@ -331,6 +450,10 @@ impl ParameterId {
             ParameterId::VelocityCoupling => "Velocity coupling",
             ParameterId::ExcitationGain => "Excitation gain",
             ParameterId::OutputGain => "Output gain",
+            ParameterId::BreathPressure => "Breath pressure",
+            ParameterId::BreathNoiseCutoffHz => "Breath brightness",
+            ParameterId::BreathFeedback => "Breath feedback",
+            ParameterId::BreathAutoLevel => "Breath auto-level",
         }
     }
 
@@ -344,6 +467,10 @@ impl ParameterId {
             ParameterId::VelocityCoupling => VELOCITY_COUPLING_RANGE,
             ParameterId::ExcitationGain => EXCITATION_GAIN_RANGE,
             ParameterId::OutputGain => OUTPUT_GAIN_RANGE,
+            ParameterId::BreathPressure => BREATH_PRESSURE_RANGE,
+            ParameterId::BreathNoiseCutoffHz => BREATH_NOISE_CUTOFF_HZ_RANGE,
+            ParameterId::BreathFeedback => BREATH_FEEDBACK_RANGE,
+            ParameterId::BreathAutoLevel => BREATH_AUTO_LEVEL_RANGE,
         }
     }
 
@@ -365,6 +492,9 @@ impl ParameterId {
                 | ParameterId::DampingRatio
                 | ParameterId::ExcitationGain
                 | ParameterId::OutputGain
+                | ParameterId::BreathPressure
+                | ParameterId::BreathAutoLevel
+                | ParameterId::BreathNoiseCutoffHz
         )
     }
 
@@ -378,6 +508,10 @@ impl ParameterId {
             }
             ParameterId::ExcitationGain => format!("{value:.2}×"),
             ParameterId::OutputGain => format!("{value:.2}×"),
+            ParameterId::BreathPressure => format!("{value:.2}×"),
+            ParameterId::BreathNoiseCutoffHz => format!("{value:.0} Hz"),
+            ParameterId::BreathFeedback => format!("{value:.2}"),
+            ParameterId::BreathAutoLevel => format!("{value:.2}"),
         }
     }
 
@@ -397,6 +531,10 @@ impl ParameterId {
             ParameterId::VelocityCoupling => "velocity_coupling",
             ParameterId::ExcitationGain => "excitation_gain",
             ParameterId::OutputGain => "output_gain",
+            ParameterId::BreathPressure => "breath_pressure",
+            ParameterId::BreathNoiseCutoffHz => "breath_noise_cutoff_hz",
+            ParameterId::BreathFeedback => "breath_feedback",
+            ParameterId::BreathAutoLevel => "breath_auto_level",
         }
     }
 
@@ -410,6 +548,10 @@ impl ParameterId {
             "velocity_coupling" => Some(ParameterId::VelocityCoupling),
             "excitation_gain" => Some(ParameterId::ExcitationGain),
             "output_gain" => Some(ParameterId::OutputGain),
+            "breath_pressure" => Some(ParameterId::BreathPressure),
+            "breath_noise_cutoff_hz" => Some(ParameterId::BreathNoiseCutoffHz),
+            "breath_feedback" => Some(ParameterId::BreathFeedback),
+            "breath_auto_level" => Some(ParameterId::BreathAutoLevel),
             _ => None,
         }
     }
@@ -626,6 +768,11 @@ fn main() -> anyhow::Result<()> {
     control.set_velocity_coupling(snapshot.velocity_coupling);
     control.set_excitation_gain(snapshot.excitation_gain);
     control.set_output_gain(snapshot.output_gain);
+    control.set_exciter_mode_u8(snapshot.exciter_mode);
+    control.set_breath_pressure(snapshot.breath_pressure);
+    control.set_breath_noise_cutoff_hz(snapshot.breath_noise_cutoff_hz);
+    control.set_breath_feedback(snapshot.breath_feedback);
+    control.set_breath_auto_level(snapshot.breath_auto_level);
 
     let midi_learn = Arc::new(MidiLearnState::new());
     midi_learn.load_assignments(&snapshot.midi_assignments);
@@ -893,6 +1040,7 @@ where
             move |data: &mut [T], _info: &cpal::OutputCallbackInfo| {
                 // Realtime-safe: just atomic loads + pure math.
                 let snapshot = control.snapshot();
+                engine.set_exciter_mode(ExciterMode::from_u8(snapshot.exciter_mode));
                 engine.set_gate(snapshot.gate);
                 engine.set_frequency_hz(snapshot.frequency_hz);
                 engine.set_amplitude(snapshot.amplitude);
@@ -904,6 +1052,10 @@ where
                 engine.set_velocity_coupling_base(snapshot.velocity_coupling);
                 engine.set_excitation_gain(snapshot.excitation_gain);
                 engine.set_output_gain(snapshot.output_gain);
+                engine.set_breath_pressure(snapshot.breath_pressure);
+                engine.set_breath_noise_cutoff_hz(snapshot.breath_noise_cutoff_hz);
+                engine.set_breath_feedback(snapshot.breath_feedback);
+                engine.set_breath_auto_level(snapshot.breath_auto_level);
                 if snapshot.trigger_counter != trigger_seen {
                     engine.trigger(snapshot.amplitude);
                     trigger_seen = snapshot.trigger_counter;
